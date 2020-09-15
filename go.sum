@@ -46,6 +46,9 @@ github.com/mattn/go-isatty v0.0.10 h1:qxFzApOv4WsAL965uUPIsXzAKCZxN2p9UqdhFS4ZW1
 github.com/mattn/go-isatty v0.0.10/go.mod h1:qgIWMr58cqv1PHHyhnkY9lrL7etaEgOFcMEpPG5Rm84=
 github.com/mmcloughlin/avo v0.0.0-20200803215136-443f81d77104 h1:ULR/QWMgcgRiZLUjSSJMU+fW+RDMstRdmnDWj9Q+AsA=
 github.com/mmcloughlin/avo v0.0.0-20200803215136-443f81d77104/go.mod h1:wqKykBG2QzQDJEzvRkcS8x6MiSJkF52hXZsXcjaB3ls=
+github.com/overlaynetwork/onet-go v0.0.3/go.mod h1:oVFPBCke69l/vULOVLp0oh/6718D0mVIX9QvjYNn8Nk=
+github.com/overlaynetwork/onet-go v0.0.4 h1:Cwg47I5m5U7awGuznjlWFtZ8F0iBSmVyS+shfPn6H74=
+github.com/overlaynetwork/onet-go v0.0.4/go.mod h1:oVFPBCke69l/vULOVLp0oh/6718D0mVIX9QvjYNn8Nk=
 github.com/overlaynetwork/onet-transport-kcp-go v0.0.0-20200914143241-31fabd85b0df h1:zeyicfzsPBDyW+nG3bXZZjm6l0hqOjMjZbQTWl4FZkA=
 github.com/overlaynetwork/onet-transport-kcp-go v0.0.0-20200914143241-31fabd85b0df/go.mod h1:Zk8GoUQ9uNOjZL43arLPCXJyUFqyKBZkVYCFvE22UJQ=
 github.com/pkg/errors v0.8.1 h1:iURUrRGxPUNPdy5/HRSm+Yj6okJ6UtLINN0Q9M4+h3I=

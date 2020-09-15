@@ -24,7 +24,7 @@ func TestConn(t *testing.T) {
 
 		require.NoError(t, err)
 
-		_, err = conn.Write([]byte("hello world"))
+		_, err = conn.Write([]byte("hello"))
 
 		require.NoError(t, err)
 
@@ -32,20 +32,34 @@ func TestConn(t *testing.T) {
 
 		require.NoError(t, err)
 
-		_, err = conn.Write([]byte("hello world"))
+		_, err = conn.Write([]byte("world"))
 
 		require.NoError(t, err)
 	}()
-
-	_, err = listener.Accept()
-
-	require.NoError(t, err)
 
 	conn, err := listener.Accept()
 
 	require.NoError(t, err)
 
+	var buff [10]byte
+
+	n, err := conn.Read(buff[:])
+
+	require.NoError(t, err)
+
+	require.Equal(t, string(buff[:n]), "hello")
+
+	conn, err = listener.Accept()
+
+	require.NoError(t, err)
+
 	require.NotNil(t, conn)
+
+	n, err = conn.Read(buff[:])
+
+	require.NoError(t, err)
+
+	require.Equal(t, string(buff[:n]), "world")
 
 	transport, ok := conn.ONet().MuxTransports[0].(*muxTransport)
 
