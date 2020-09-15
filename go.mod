@@ -1,4 +1,4 @@
-module github.com/OverlayNetwork/onet-transport-mux-go
+module github.com/overlaynetwork/onet-transport-mux-go
 
 go 1.14
 
