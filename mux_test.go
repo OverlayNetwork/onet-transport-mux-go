@@ -4,10 +4,48 @@ import (
 	"context"
 	"testing"
 
+	"github.com/libs4go/scf4go"
+	_ "github.com/libs4go/scf4go/codec" //
+	"github.com/libs4go/scf4go/reader/memory"
+	"github.com/libs4go/slf4go"
+	_ "github.com/libs4go/slf4go/backend/console" //
 	"github.com/overlaynetwork/onet-go"
 	_ "github.com/overlaynetwork/onet-transport-kcp-go" //
 	"github.com/stretchr/testify/require"
 )
+
+var loggerjson = `
+{
+	"default":{
+		"backend":"console",
+		"level":"debug"
+	},
+	"backend":{
+		"console":{
+			"formatter":{
+				"output": "@t @l @s @m"
+			}
+		}
+	}
+}
+`
+
+func init() {
+	config := scf4go.New()
+
+	err := config.Load(memory.New(memory.Data(loggerjson, "json")))
+
+	if err != nil {
+		panic(err)
+	}
+
+	err = slf4go.Config(config)
+
+	if err != nil {
+		panic(err)
+	}
+
+}
 
 func TestConn(t *testing.T) {
 
@@ -61,11 +99,7 @@ func TestConn(t *testing.T) {
 
 	require.Equal(t, string(buff[:n]), "world")
 
-	transport, ok := conn.ONet().MuxTransports[0].(*muxTransport)
+	println(conn.LocalAddr().String(), conn.RemoteAddr().String())
 
-	require.True(t, ok)
-
-	require.Equal(t, len(transport.out), 1)
-
-	require.Equal(t, len(transport.accpetChan), 1)
+	conn.Close()
 }

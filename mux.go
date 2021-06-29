@@ -2,66 +2,161 @@ package mux
 
 import (
 	"context"
+	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/inconshreveable/muxado"
 	"github.com/libs4go/errors"
+	"github.com/libs4go/slf4go"
 	"github.com/overlaynetwork/onet-go"
 )
-
-type muxConn struct {
-	conn onet.Conn
-	err  error
-}
 
 type muxSession struct {
 	conn    onet.Conn
 	session muxado.Session
+	addr    *onet.Addr
+	counter int64
+	network *onet.OverlayNetwork
+}
+
+func newSession(network *onet.OverlayNetwork, addr *onet.Addr, next onet.Next, isServer bool) (*muxSession, error) {
+
+	conn, err := next()
+
+	if err != nil {
+		return nil, err
+	}
+
+	var session muxado.Session
+
+	if isServer {
+		session = muxado.Server(conn, nil)
+	} else {
+		session = muxado.Client(conn, nil)
+	}
+
+	return &muxSession{
+		session: session,
+		conn:    conn,
+		addr:    addr,
+		network: network,
+	}, nil
+}
+
+func (session *muxSession) Close() error {
+	return nil
+}
+
+func (session *muxSession) Accept() (*muxConn, error) {
+	conn, err := session.session.Accept()
+
+	if err != nil {
+		return nil, err
+	}
+
+	atomic.AddInt64(&session.counter, 1)
+
+	return newMuxConn(conn, session)
+}
+
+func (session *muxSession) Connect() (*muxConn, error) {
+	conn, err := session.session.Open()
+
+	if err != nil {
+		return nil, err
+	}
+
+	atomic.AddInt64(&session.counter, 1)
+
+	return newMuxConn(conn, session)
+}
+
+type muxConn struct {
+	net.Conn
+	session *muxSession
+	laddr   *onet.Addr
+	raddr   *onet.Addr
+}
+
+func newMuxConn(conn net.Conn, session *muxSession) (*muxConn, error) {
+
+	_, relativeAddr, err := session.addr.ResolveNetAddr()
+
+	if err != nil {
+		return nil, err
+	}
+
+	lNetaddr, _, err := session.conn.LocalAddr().ResolveNetAddr()
+
+	if err != nil {
+		return nil, err
+	}
+
+	laddr, err := onet.FromNetAddr(lNetaddr)
+
+	if err != nil {
+		return nil, err
+	}
+
+	rNetaddr, _, err := session.conn.RemoteAddr().ResolveNetAddr()
+
+	if err != nil {
+		return nil, err
+	}
+
+	raddr, err := onet.FromNetAddr(rNetaddr)
+
+	if err != nil {
+		return nil, err
+	}
+
+	laddr = laddr.Join(relativeAddr.SubAddrs()...)
+
+	raddr = raddr.Join(relativeAddr.SubAddrs()...)
+
+	return &muxConn{
+		Conn:    conn,
+		session: session,
+		laddr:   laddr,
+		raddr:   raddr,
+	}, nil
+}
+
+func (conn *muxConn) LocalAddr() *onet.Addr {
+
+	return conn.laddr
+}
+
+func (conn *muxConn) RemoteAddr() *onet.Addr {
+	return conn.raddr
+}
+
+func (conn *muxConn) ONet() *onet.OverlayNetwork {
+	return conn.session.network
+}
+
+func (conn *muxConn) Close() error {
+	conn.Conn.Close()
+
+	atomic.AddInt64(&conn.session.counter, -1)
+
+	return nil
 }
 
 type muxTransport struct {
+	slf4go.Logger
 	sync.RWMutex
-	out        map[string]*muxSession
-	accpetChan map[string]chan *muxConn
-}
-
-type muxListener struct {
-	transport  *muxTransport
-	laddr      *onet.Addr
-	accpetChan chan *muxConn
-}
-
-func (listener *muxListener) Accept() (onet.Conn, error) {
-	conn := <-listener.accpetChan
-	return conn.conn, conn.err
-}
-
-func (listener *muxListener) Close() error {
-	return listener.transport.close(listener.laddr)
-}
-
-func (listener *muxListener) Addr() *onet.Addr {
-	return listener.laddr
+	out map[string]*muxSession
+	in  map[string]*muxSession
 }
 
 func newMuxTransport() *muxTransport {
 	return &muxTransport{
-		out:        make(map[string]*muxSession),
-		accpetChan: make(map[string]chan *muxConn),
+		Logger: slf4go.Get("mux"),
+		out:    make(map[string]*muxSession),
+		in:     make(map[string]*muxSession),
 	}
-}
-
-func (transport *muxTransport) close(laddr *onet.Addr) error {
-	transport.Lock()
-	defer transport.Unlock()
-
-	acceptChan, ok := transport.accpetChan[laddr.String()]
-
-	if ok {
-		close(acceptChan)
-	}
-
-	return nil
 }
 
 func (transport *muxTransport) String() string {
@@ -72,122 +167,93 @@ func (transport *muxTransport) Protocol() string {
 	return "mux"
 }
 
-func (transport *muxTransport) Listen(network *onet.OverlayNetwork, chainOffset int) (onet.Listener, error) {
-
-	transport.Lock()
-	defer transport.Unlock()
-
-	acceptChan, ok := transport.accpetChan[network.Addr.String()]
-
-	if ok {
-		return nil, errors.Wrap(onet.ErrAddr, "laddr %s already bind", network.Addr)
-	}
-
-	acceptChan = make(chan *muxConn)
-	transport.accpetChan[network.Addr.String()] = acceptChan
-
-	return &muxListener{
-		transport:  transport,
-		laddr:      network.Addr,
-		accpetChan: acceptChan,
-	}, nil
-}
-
-func (transport *muxTransport) Dial(ctx context.Context, network *onet.OverlayNetwork, chainOffset int) (onet.Conn, error) {
+func (transport *muxTransport) search(sessions map[string]*muxSession, network *onet.OverlayNetwork, addr *onet.Addr, next onet.Next, isServer bool) (*muxSession, error) {
 
 	transport.RLock()
-	session, ok := transport.out[network.Addr.String()]
+	session, ok := sessions[addr.String()]
 	transport.RUnlock()
 
 	if !ok {
-		return nil, errors.Wrap(onet.ErrMuxNotFound, "mux %s session %s not found", network.MuxAddrs[chainOffset], network.Addr)
+		var err error
+		session, err = newSession(network, addr, next, isServer)
+
+		if err != nil {
+			return nil, err
+		}
+
+		transport.Lock()
+		sessions[addr.String()] = session
+		transport.Unlock()
 	}
 
-	conn, err := session.session.Open()
-
-	if err != nil {
-		return nil, errors.Wrap(onet.ErrMuxNotFound, "mux %s session %s open stream error", network.MuxAddrs[chainOffset], network.Addr)
-	}
-
-	return onet.ToOnetConnWithAddr(conn, network, session.conn.LocalAddr(), session.conn.RemoteAddr())
+	return session, nil
 }
 
-func (transport *muxTransport) Client(network *onet.OverlayNetwork, conn onet.Conn, chainOffset int) (onet.Conn, error) {
-
+func (transport *muxTransport) close(sessions map[string]*muxSession, addr *onet.Addr) {
 	transport.Lock()
-	session, ok := transport.out[network.Addr.String()]
+	defer transport.Unlock()
+
+	session, ok := sessions[addr.String()]
 
 	if ok {
-		session.session.Close()
+		delete(sessions, addr.String())
+
+		if err := session.Close(); err != nil {
+			transport.E("close session error {@e}", err)
+		}
 	}
+}
 
-	session = &muxSession{
-		session: muxado.Client(conn, nil),
-		conn:    conn,
-	}
+func (transport *muxTransport) Client(ctx context.Context, network *onet.OverlayNetwork, addr *onet.Addr, next onet.Next) (onet.Conn, error) {
 
-	transport.out[network.Addr.String()] = session
-
-	transport.Unlock()
-
-	sessionConn, err := session.session.Open()
-
-	if err != nil {
-		return nil, errors.Wrap(onet.ErrMuxNotFound, "mux %s session %s open stream error", network.MuxAddrs[chainOffset], network.Addr)
-	}
-
-	result, err := onet.ToOnetConnWithAddr(sessionConn, network, conn.LocalAddr(), conn.RemoteAddr())
+	session, err := transport.search(transport.out, network, addr, next, false)
 
 	if err != nil {
 		return nil, err
 	}
 
-	return result, nil
-}
-
-func (transport *muxTransport) doAccept(network *onet.OverlayNetwork, underlying onet.Conn, session muxado.Session, acceptChain chan *muxConn) {
-
-	defer recover()
-
-	for {
-		conn, err := session.Accept()
-
-		if err != nil {
-			code, _ := muxado.GetError(err)
-
-			if code == muxado.SessionClosed || code == muxado.PeerEOF {
-				return
-			}
-		}
-
-		onetCon, err := onet.ToOnetConnWithAddr(conn, network, underlying.LocalAddr(), underlying.RemoteAddr())
-
-		acceptChain <- &muxConn{
-			conn: onetCon,
-			err:  err,
-		}
-	}
-}
-
-func (transport *muxTransport) Server(network *onet.OverlayNetwork, conn onet.Conn, chainOffset int) (onet.Conn, error) {
-
-	transport.RLock()
-	defer transport.RUnlock()
-	acceptChan, ok := transport.accpetChan[network.Addr.String()]
-
-	serverSession := muxado.Server(conn, nil)
-
-	sessionConn, err := serverSession.Accept()
+	conn, err := session.Connect()
 
 	if err != nil {
-		return nil, errors.Wrap(onet.ErrMuxNotFound, "mux %s session %s accept error", network.MuxAddrs[chainOffset], network.Addr)
+		transport.close(transport.out, addr)
+		return nil, errors.Wrap(err, "mux session %s open stream error", addr)
 	}
+
+	return conn, nil
+
+}
+
+func (transport *muxTransport) Server(ctx context.Context, network *onet.OverlayNetwork, addr *onet.Addr, next onet.Next) (onet.Conn, error) {
+
+	session, err := transport.search(transport.in, network, addr, next, true)
+
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := session.Accept()
+
+	if err != nil {
+		transport.close(transport.out, addr)
+		return nil, errors.Wrap(err, "mux session %s accept error", addr)
+	}
+
+	return conn, nil
+}
+
+func (transport *muxTransport) Close(network *onet.OverlayNetwork, addr *onet.Addr, next onet.NextClose) error {
+	transport.Lock()
+	session, ok := transport.in[addr.String()]
 
 	if ok {
-		go transport.doAccept(network, conn, serverSession, acceptChan)
+		delete(transport.in, addr.String())
+		session.Close()
 	}
 
-	return onet.ToOnetConnWithAddr(sessionConn, network, conn.LocalAddr(), conn.RemoteAddr())
+	transport.Unlock()
+
+	return next()
+
 }
 
 var protocol = &onet.Protocol{Name: "mux"}
